@@ -1,0 +1,332 @@
+// =============================================================================
+// Certification DB — Prisma Schema (tests-api)
+// Datasource: certification_db (PostgreSQL)
+// После генерации миграции добавь custom_additions.sql вручную
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CERTIFICATION_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum CompetencyArea {
+  data_modeling
+  abap
+  administration
+  bw4hana
+  business_analytics
+
+  @@map("competency_area")
+}
+
+enum CompetencyGrade {
+  K1
+  K2
+  K3
+  K4
+  K5
+
+  @@map("competency_grade")
+}
+
+enum QuestionType {
+  single_choice
+  multiple_choice
+  short_answer
+  open_text
+
+  @@map("question_type")
+}
+
+enum DifficultyLevel {
+  easy
+  medium
+  hard
+
+  @@map("difficulty_level")
+}
+
+enum AttemptStatus {
+  in_progress
+  completed
+  timed_out
+  cancelled
+
+  @@map("attempt_status")
+}
+
+enum RecommendationStatus {
+  new
+  viewed
+  in_progress
+  completed
+
+  @@map("recommendation_status")
+}
+
+// ---------------------------------------------------------------------------
+// COMPETENCY — справочник компетенций SAP BW
+// competency_id экспортируется в company_db и courses_db через API/события
+// ---------------------------------------------------------------------------
+
+model Competency {
+  competencyId String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String         @unique @db.VarChar(300)
+  description  String?
+  area         CompetencyArea
+  minGrade     CompetencyGrade @default(K1)
+  isActive     Boolean        @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  questions         Question[]
+  competencyResults CompetencyResult[]
+  competencyGaps    CompetencyGap[]
+
+  @@map("competency")
+}
+
+// ---------------------------------------------------------------------------
+// QUESTION — вопрос с версионированием (NFR-18)
+// root_id — логический ID вопроса (не меняется между версиями)
+// question_id — физический ID конкретной версии
+// Partial unique index (root_id) WHERE is_current = TRUE → custom SQL
+// Триггер деактивации старых версий → custom SQL
+// ---------------------------------------------------------------------------
+
+model Question {
+  questionId      String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rootId          String          @db.Uuid
+  versionNumber   Int             @default(1)
+  competencyId    String          @db.Uuid
+  type            QuestionType
+  difficulty      DifficultyLevel @default(medium)
+  text            String
+  explanation     String?
+  maxScore        Decimal         @default(1.0) @db.Decimal(5, 2)
+  isCurrent       Boolean         @default(true)
+  isLlmGenerated  Boolean         @default(false)
+  // createdBy → company_db.employee (не FK)
+  createdBy       String?         @db.Uuid
+  createdAt       DateTime        @default(now()) @db.Timestamptz(6)
+
+  competency    Competency     @relation(fields: [competencyId], references: [competencyId])
+  answerOptions AnswerOption[]
+  testQuestions TestQuestion[]
+  answerLogs    AnswerLog[]
+
+  @@unique([rootId, versionNumber])
+  @@index([competencyId])
+  @@index([rootId])
+  @@map("question")
+}
+
+// ---------------------------------------------------------------------------
+// ANSWER_OPTION — варианты ответов для закрытых вопросов
+// ---------------------------------------------------------------------------
+
+model AnswerOption {
+  optionId    String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  questionId  String  @db.Uuid
+  text        String
+  isCorrect   Boolean @default(false)
+  orderNumber Int     @default(0)
+
+  question Question @relation(fields: [questionId], references: [questionId], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("answer_option")
+}
+
+// ---------------------------------------------------------------------------
+// TEST
+// ---------------------------------------------------------------------------
+
+model Test {
+  testId        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title         String  @db.VarChar(300)
+  description   String?
+  timeLimitSec  Int?
+  passingScore  Decimal @default(70.0) @db.Decimal(5, 2)
+  maxAttempts   Int     @default(1)
+  isActive      Boolean @default(false)
+  // createdBy → company_db.employee (не FK)
+  createdBy     String? @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  testQuestions TestQuestion[]
+  attempts      TestAttempt[]
+
+  @@map("test")
+}
+
+// ---------------------------------------------------------------------------
+// TEST_QUESTION — M:N тест ↔ конкретная версия вопроса
+// ---------------------------------------------------------------------------
+
+model TestQuestion {
+  testId      String   @db.Uuid
+  questionId  String   @db.Uuid
+  orderNumber Int      @default(0)
+  weight      Decimal? @db.Decimal(5, 2)
+
+  test     Test     @relation(fields: [testId], references: [testId], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [questionId])
+
+  @@id([testId, questionId])
+  @@index([testId])
+  @@map("test_question")
+}
+
+// ---------------------------------------------------------------------------
+// TEST_ATTEMPT (UC-01, UC-05)
+// employeeId, assignmentId → company_db (не FK)
+// ---------------------------------------------------------------------------
+
+model TestAttempt {
+  attemptId            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  testId               String        @db.Uuid
+  // Из company_db — не FK
+  employeeId           String        @db.Uuid
+  assignmentId         String?       @db.Uuid
+  status               AttemptStatus @default(in_progress)
+  isSelfAssessment     Boolean       @default(false)
+  currentQuestionIndex Int           @default(0)
+  timeLeftSec          Int?
+  totalScore           Decimal?      @db.Decimal(8, 2)
+  maxScore             Decimal?      @db.Decimal(8, 2)
+  gradeAchieved        CompetencyGrade?
+  ipAddress            String?       @db.Inet
+  startedAt            DateTime      @default(now()) @db.Timestamptz(6)
+  finishedAt           DateTime?     @db.Timestamptz(6)
+  createdAt            DateTime      @default(now()) @db.Timestamptz(6)
+
+  test               Test               @relation(fields: [testId], references: [testId])
+  answerLogs         AnswerLog[]
+  competencyResults  CompetencyResult[]
+  competencyGaps     CompetencyGap[]
+
+  @@index([employeeId])
+  @@index([testId])
+  @@map("test_attempt")
+}
+
+// ---------------------------------------------------------------------------
+// ANSWER_LOG (NFR-09, UC-02)
+// selectedOptionIds: String[] → text[] (UUID-строки вариантов ответа)
+// BigInt PK для сортировки без дополнительного индекса
+// llm_score и llm_explanation заполняются асинхронно
+// ---------------------------------------------------------------------------
+
+model AnswerLog {
+  logId             BigInt    @id @default(autoincrement())
+  attemptId         String    @db.Uuid
+  questionId        String    @db.Uuid
+  selectedOptionIds String[]
+  answerText        String?
+  isCorrect         Boolean?
+  score             Decimal?  @db.Decimal(5, 2)
+  llmScore          Decimal?  @db.Decimal(5, 2)
+  llmExplanation    String?
+  needsHrReview     Boolean   @default(false)
+  hrScore           Decimal?  @db.Decimal(5, 2)
+  hrComment         String?
+  // reviewedBy → company_db.employee (не FK)
+  reviewedBy        String?   @db.Uuid
+  reviewedAt        DateTime? @db.Timestamptz(6)
+  answeredAt        DateTime  @default(now()) @db.Timestamptz(6)
+
+  attempt  TestAttempt @relation(fields: [attemptId], references: [attemptId], onDelete: Cascade)
+  question Question    @relation(fields: [questionId], references: [questionId])
+
+  @@index([attemptId])
+  @@map("answer_log")
+}
+
+// ---------------------------------------------------------------------------
+// COMPETENCY_RESULT — итоговый балл по компетенции (публикуется в company_db)
+// ---------------------------------------------------------------------------
+
+model CompetencyResult {
+  resultId       String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  attemptId      String          @db.Uuid
+  competencyId   String          @db.Uuid
+  score          Decimal         @db.Decimal(5, 2)
+  maxScore       Decimal         @db.Decimal(5, 2)
+  gradeAchieved  CompetencyGrade
+  calculatedAt   DateTime        @default(now()) @db.Timestamptz(6)
+
+  attempt    TestAttempt @relation(fields: [attemptId], references: [attemptId], onDelete: Cascade)
+  competency Competency  @relation(fields: [competencyId], references: [competencyId])
+
+  @@unique([attemptId, competencyId])
+  @@index([attemptId])
+  @@map("competency_result")
+}
+
+// ---------------------------------------------------------------------------
+// COMPETENCY_GAP (UC-03)
+// gap_size — GENERATED ALWAYS AS в PostgreSQL, в Prisma отсутствует:
+//   • не объявляется здесь
+//   • добавляется через custom_additions.sql
+//   • читается через $queryRaw когда нужна сортировка по gap_size
+// ---------------------------------------------------------------------------
+
+model CompetencyGap {
+  gapId        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  attemptId    String          @db.Uuid
+  competencyId String          @db.Uuid
+  actualGrade  CompetencyGrade
+  targetGrade  CompetencyGrade
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+
+  attempt         TestAttempt      @relation(fields: [attemptId], references: [attemptId], onDelete: Cascade)
+  competency      Competency       @relation(fields: [competencyId], references: [competencyId])
+  recommendations Recommendation[]
+
+  @@unique([attemptId, competencyId])
+  @@index([attemptId])
+  @@index([competencyId])
+  @@map("competency_gap")
+}
+
+// ---------------------------------------------------------------------------
+// RECOMMENDATION (UC-03, UC-04)
+// courseId, courseTitle → courses_db (не FK, денормализован для воспроизводимости)
+// employeeId → company_db (не FK)
+// ---------------------------------------------------------------------------
+
+model Recommendation {
+  recommendationId String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  gapId            String               @db.Uuid
+  // Из company_db — не FK
+  employeeId       String               @db.Uuid
+  // Из courses_db — не FK
+  courseId         String               @db.Uuid
+  courseTitle      String               @db.VarChar(300)
+  priority         Int                  @default(1)
+  explanation      String?
+  status           RecommendationStatus @default(new)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  gap CompetencyGap @relation(fields: [gapId], references: [gapId], onDelete: Cascade)
+
+  @@unique([gapId, courseId])
+  @@index([employeeId])
+  @@index([gapId])
+  @@map("recommendation")
+}

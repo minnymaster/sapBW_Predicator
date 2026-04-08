@@ -1,0 +1,43 @@
+# Зависимости
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# Базы данных
+*.db
+*.sqlite
+postgres_data/
+data/
+
+# Окружение
+.env
+.env.local
+.env.*.local
+
+# Логи
+*.log
+logs/
+
+# Кэш и временные файлы
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Docker
+.docker/
+.vscode/settings.json
+.idea/
+
+# LLM модели
+*.bin
+*.gguf
+models/
+llama/
+
+# Большой контент
+*.docx
+*.pdf
+*.pptx

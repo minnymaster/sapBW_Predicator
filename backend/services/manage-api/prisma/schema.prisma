@@ -1,0 +1,241 @@
+// =============================================================================
+// Company DB — Prisma Schema (manage-api)
+// Datasource: company_db (PostgreSQL)
+// После генерации миграции добавь custom_additions.sql вручную
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("COMPANY_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  employee
+  hr
+  director
+
+  @@map("user_role")
+}
+
+enum AssignmentStatus {
+  pending
+  in_progress
+  completed
+  overdue
+  cancelled
+
+  @@map("assignment_status")
+}
+
+enum CompetencyGrade {
+  K1
+  K2
+  K3
+  K4
+  K5
+
+  @@map("competency_grade")
+}
+
+enum CertificateStatus {
+  pending
+  approved
+  rejected
+
+  @@map("certificate_status")
+}
+
+// ---------------------------------------------------------------------------
+// DEPARTMENT
+// Круговая зависимость с Employee (head_employee_id) решается через
+// опциональные FK — Prisma создаёт таблицы, затем добавляет FK.
+// ---------------------------------------------------------------------------
+
+model Department {
+  departmentId   String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String  @db.VarChar(200)
+  parentId       String? @db.Uuid
+  headEmployeeId String? @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  parent    Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [departmentId])
+  children  Department[] @relation("DepartmentHierarchy")
+
+  headEmployee Employee?  @relation("DepartmentHead", fields: [headEmployeeId], references: [employeeId])
+  employees    Employee[] @relation("EmployeeDepartment")
+  targetKpis   TargetKpi[]
+
+  @@map("department")
+}
+
+// ---------------------------------------------------------------------------
+// EMPLOYEE
+// ---------------------------------------------------------------------------
+
+model Employee {
+  employeeId   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fullName     String    @db.VarChar(300)
+  email        String    @unique @db.VarChar(255)
+  role         UserRole  @default(employee)
+  departmentId String?   @db.Uuid
+  position     String?   @db.VarChar(200)
+  isActive     Boolean   @default(true)
+  passwordHash String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  department           Department?           @relation("EmployeeDepartment", fields: [departmentId], references: [departmentId])
+  headOfDepartments    Department[]          @relation("DepartmentHead")
+  competencyProfiles   CompetencyProfile[]
+  assignedTests        TestAssignment[]      @relation("AssignedTo")
+  createdAssignments   TestAssignment[]      @relation("AssignedBy")
+  certificates         ExternalCertificate[] @relation("CertEmployee")
+  reviewedCertificates ExternalCertificate[] @relation("CertReviewer")
+  kpisSet              TargetKpi[]
+  auditLogs            AuditLog[]
+
+  @@map("employee")
+}
+
+// ---------------------------------------------------------------------------
+// COMPETENCY_PROFILE
+// valid_to = null → текущая запись (NFR-18, UC-02)
+// PARTIAL UNIQUE INDEX (employee_id, competency_id) WHERE valid_to IS NULL
+// → добавляется в custom_additions.sql (Prisma не поддерживает partial index)
+// ---------------------------------------------------------------------------
+
+model CompetencyProfile {
+  profileId       String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId      String          @db.Uuid
+  competencyId    String          @db.Uuid
+  competencyName  String          @db.VarChar(300)
+  grade           CompetencyGrade
+  score           Decimal?        @db.Decimal(5, 2)
+  validFrom       DateTime        @default(now()) @db.Timestamptz(6)
+  validTo         DateTime?       @db.Timestamptz(6)
+  assessedAt      DateTime        @default(now()) @db.Timestamptz(6)
+  sourceAttemptId String?         @db.Uuid
+  createdAt       DateTime        @default(now()) @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([employeeId, competencyId])
+  @@map("competency_profile")
+}
+
+// ---------------------------------------------------------------------------
+// TARGET_KPI (UC-11, UC-15)
+// CHECK (department_id IS NOT NULL OR target_role IS NOT NULL) → custom SQL
+// ---------------------------------------------------------------------------
+
+model TargetKpi {
+  kpiId          String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  departmentId   String?         @db.Uuid
+  targetRole     UserRole?
+  competencyId   String          @db.Uuid
+  competencyName String          @db.VarChar(300)
+  targetGrade    CompetencyGrade
+  targetPercent  Decimal         @default(80.0) @db.Decimal(5, 2)
+  setBy          String          @db.Uuid
+  periodStart    DateTime        @db.Date
+  periodEnd      DateTime?       @db.Date
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  department Department? @relation(fields: [departmentId], references: [departmentId], onDelete: Cascade)
+  setter     Employee    @relation(fields: [setBy], references: [employeeId])
+
+  @@index([departmentId])
+  @@map("target_kpi")
+}
+
+// ---------------------------------------------------------------------------
+// TEST_ASSIGNMENT (UC-08, UC-09)
+// test_id → certification_db (не FK, другая БД)
+// DEFERRABLE UNIQUE → custom SQL (Prisma создаёт обычный @@unique)
+// ---------------------------------------------------------------------------
+
+model TestAssignment {
+  assignmentId       String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId         String           @db.Uuid
+  testId             String           @db.Uuid
+  assignedBy         String           @db.Uuid
+  status             AssignmentStatus @default(pending)
+  deadline           DateTime?        @db.Timestamptz(6)
+  completedAttemptId String?          @db.Uuid
+
+  assignedAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  employee Employee @relation("AssignedTo", fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  assigner Employee @relation("AssignedBy", fields: [assignedBy], references: [employeeId])
+
+  @@index([employeeId])
+  @@index([employeeId, status])
+  @@map("test_assignment")
+}
+
+// ---------------------------------------------------------------------------
+// EXTERNAL_CERTIFICATE (UC-06)
+// competencyIds: String[] → в PostgreSQL text[], приложение хранит UUID-строки
+// ---------------------------------------------------------------------------
+
+model ExternalCertificate {
+  certificateId String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId    String            @db.Uuid
+  title         String            @db.VarChar(300)
+  provider      String            @db.VarChar(200)
+  issuedAt      DateTime          @db.Date
+  fileKey       String?
+  competencyIds String[]
+  status        CertificateStatus @default(pending)
+  reviewedBy    String?           @db.Uuid
+  reviewComment String?
+  reviewedAt    DateTime?         @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  employee Employee  @relation("CertEmployee", fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  reviewer Employee? @relation("CertReviewer", fields: [reviewedBy], references: [employeeId])
+
+  @@index([employeeId])
+  @@map("external_certificate")
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT_LOG (NFR-09) — только append, BigInt PK для быстрой сортировки
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  logId      BigInt   @id @default(autoincrement())
+  actorId    String?  @db.Uuid
+  action     String   @db.VarChar(100)
+  entityType String   @db.VarChar(100)
+  entityId   String?  @db.Uuid
+  oldData    Json?
+  newData    Json?
+  ipAddress  String?  @db.Inet
+  occurredAt DateTime @default(now()) @db.Timestamptz(6)
+
+  actor Employee? @relation(fields: [actorId], references: [employeeId], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([occurredAt(sort: Desc)])
+  @@map("audit_log")
+}

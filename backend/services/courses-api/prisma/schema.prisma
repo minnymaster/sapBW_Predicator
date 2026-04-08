@@ -1,0 +1,173 @@
+// =============================================================================
+// Courses DB — Prisma Schema (courses-api)
+// Datasource: courses_db (PostgreSQL)
+// После генерации миграции добавь custom_additions.sql вручную
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("COURSES_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum CourseStatus {
+  draft
+  published
+  archived
+
+  @@map("course_status")
+}
+
+enum MaterialType {
+  video
+  document
+  article
+  link
+  interactive
+
+  @@map("material_type")
+}
+
+// ---------------------------------------------------------------------------
+// COURSE (UC-10, UC-04)
+// competencyIds: String[] — массив competency_id из certification_db (не FK)
+// GIN-индекс по competency_ids → custom SQL (движок рекомендаций UC-03)
+// createdBy → company_db.employee (не FK)
+// ---------------------------------------------------------------------------
+
+model Course {
+  courseId      String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title         String       @db.VarChar(300)
+  description   String?
+  status        CourseStatus @default(draft)
+  // UUID-строки competency_id из certification_db для подбора рекомендаций
+  competencyIds String[]
+  createdBy     String?      @db.Uuid
+  publishedAt   DateTime?    @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  modules Module[]
+
+  @@index([status])
+  @@map("course")
+}
+
+// ---------------------------------------------------------------------------
+// MODULE — логический раздел курса
+// orderNumber задаёт последовательность прохождения (ВКР рис. 5)
+// ---------------------------------------------------------------------------
+
+model Module {
+  moduleId    String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId    String  @db.Uuid
+  title       String  @db.VarChar(300)
+  description String?
+  orderNumber Int     @default(0)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  course    Course     @relation(fields: [courseId], references: [courseId], onDelete: Cascade)
+  materials Material[]
+
+  @@unique([courseId, orderNumber])
+  @@index([courseId])
+  @@map("module")
+}
+
+// ---------------------------------------------------------------------------
+// MATERIAL — учебный объект (видео, документ, ссылка)
+// fileKey — ключ в S3-совместимом хранилище (video, document, interactive)
+// url — внешняя ссылка (link, article)
+// CHECK (file_key IS NOT NULL OR url IS NOT NULL) → custom SQL
+// createdBy → company_db.employee (не FK)
+// ---------------------------------------------------------------------------
+
+model Material {
+  materialId  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId    String       @db.Uuid
+  title       String       @db.VarChar(300)
+  type        MaterialType
+  orderNumber Int          @default(0)
+  fileKey     String?
+  url         String?
+  durationMin Int?
+  isActive    Boolean      @default(true)
+  createdBy   String?      @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  module           Module            @relation(fields: [moduleId], references: [moduleId], onDelete: Cascade)
+  versions         MaterialVersion[]
+  progressRecords  CourseProgress[]
+
+  @@unique([moduleId, orderNumber])
+  @@index([moduleId])
+  @@map("material")
+}
+
+// ---------------------------------------------------------------------------
+// MATERIAL_VERSION — версионирование материалов (NFR-18)
+// contentHash — SHA-256 файла/URL для отслеживания изменений
+// Partial unique index (material_id) WHERE is_current = TRUE → custom SQL
+// Триггер деактивации старых версий → custom SQL
+// createdBy → company_db.employee (не FK)
+// ---------------------------------------------------------------------------
+
+model MaterialVersion {
+  versionId     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  materialId    String   @db.Uuid
+  versionNumber Int      @default(1)
+  contentHash   String
+  fileKey       String?
+  url           String?
+  changeNote    String?
+  isCurrent     Boolean  @default(true)
+  createdBy     String?  @db.Uuid
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  material        Material         @relation(fields: [materialId], references: [materialId], onDelete: Cascade)
+  progressRecords CourseProgress[]
+
+  @@unique([materialId, versionNumber])
+  @@index([materialId])
+  @@map("material_version")
+}
+
+// ---------------------------------------------------------------------------
+// COURSE_PROGRESS — прогресс сотрудника по материалам (UC-04)
+// employeeId → company_db (не FK)
+// materialVersionId фиксирует, по какой версии обучался сотрудник (NFR-18)
+// ---------------------------------------------------------------------------
+
+model CourseProgress {
+  progressId        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // Из company_db — не FK
+  employeeId        String   @db.Uuid
+  materialId        String   @db.Uuid
+  materialVersionId String   @db.Uuid
+  isCompleted       Boolean  @default(false)
+  progressSec       Int      @default(0)
+  firstViewedAt     DateTime @default(now()) @db.Timestamptz(6)
+  lastViewedAt      DateTime @default(now()) @db.Timestamptz(6)
+  completedAt       DateTime? @db.Timestamptz(6)
+
+  material        Material        @relation(fields: [materialId], references: [materialId], onDelete: Cascade)
+  materialVersion MaterialVersion @relation(fields: [materialVersionId], references: [versionId])
+
+  @@unique([employeeId, materialId])
+  @@index([employeeId])
+  @@index([materialId])
+  @@map("course_progress")
+}

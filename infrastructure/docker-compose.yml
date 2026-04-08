@@ -1,0 +1,82 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # company_db — сотрудники, KPI, назначения (Manage API, Reports API)
+  # ---------------------------------------------------------------------------
+  company_db:
+    image: postgres:16-alpine
+    container_name: sapbw_company_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       company_db
+      POSTGRES_USER:     company_user
+      POSTGRES_PASSWORD: company_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - company_db_data:/var/lib/postgresql/data
+      - ./postgres/company_db/init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U company_user -d company_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # courses_db — библиотека курсов и материалов (Courses API)
+  # ---------------------------------------------------------------------------
+  courses_db:
+    image: postgres:16-alpine
+    container_name: sapbw_courses_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       courses_db
+      POSTGRES_USER:     courses_user
+      POSTGRES_PASSWORD: courses_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - courses_db_data:/var/lib/postgresql/data
+      - ./postgres/courses_db/init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U courses_user -d courses_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # certification_db — вопросы, попытки, результаты (Tests API)
+  # ---------------------------------------------------------------------------
+  certification_db:
+    image: postgres:16-alpine
+    container_name: sapbw_certification_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       certification_db
+      POSTGRES_USER:     certification_user
+      POSTGRES_PASSWORD: certification_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - certification_db_data:/var/lib/postgresql/data
+      - ./postgres/certification_db/init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U certification_user -d certification_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sapbw_net
+
+volumes:
+  company_db_data:
+  courses_db_data:
+  certification_db_data:
+
+networks:
+  sapbw_net:
+    driver: bridge
