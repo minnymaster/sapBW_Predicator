@@ -40,3 +40,6 @@ postgres_data/
 
 # TypeScript
 *.tsbuildinfo
+
+# RSA keys (генерируются автоматически при старте сервиса)
+backend/services/*/keys/
