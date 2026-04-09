@@ -23,24 +23,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Команды разработки
 
-> Код ещё не написан — команды будут добавлены после инициализации проекта. Ожидаемая структура:
-
 ```bash
-# Backend (каждый микросервис)
-npm run dev          # запуск в режиме разработки
-npm run build        # сборка TypeScript
-npm run lint         # ESLint
-npm run test         # unit-тесты (Jest)
-npm run test:e2e     # e2e тесты
+# tests-api (backend/services/tests-api)
+npm run dev                     # NestJS watch mode
+npm run build                   # сборка TypeScript → dist/
+npm run lint                    # ESLint
+npm run test                    # Jest unit-тесты
+npm run test:e2e                # e2e тесты
+npm run prisma:generate         # генерация Prisma Client
+npm run prisma:migrate          # применить миграции (deploy)
 
-# Frontend
-npm run dev          # Vite dev server
-npm run build        # production build
-npm run lint         # ESLint + TypeScript check
-
-# Инфраструктура
-docker compose up -d              # поднять всё
-docker compose up -d company_db   # поднять одну БД
+# Инфраструктура (infrastructure/)
+docker compose up -d                    # поднять всё
+docker compose up -d certification_db   # только БД Tests API
+docker compose up -d tests-api          # только Tests API
 ```
 
 ## Архитектура (строго по ВКР, глава 2)

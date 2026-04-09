@@ -4,7 +4,17 @@
       "Bash(pip install:*)",
       "Bash(python -c ':*)",
       "Bash(docker compose:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(claude mcp:*)"
     ]
+  },
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    }
   }
 }
