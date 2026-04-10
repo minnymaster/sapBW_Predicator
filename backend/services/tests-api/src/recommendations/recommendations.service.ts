@@ -1,13 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { LlmService } from '../llm/llm.service';
+import { LlmQueueService } from '../llm/llm-queue.service';
 import { RecommendationStatus } from '../../generated/prisma';
 
 @Injectable()
 export class RecommendationsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly llm: LlmService,
+    private readonly llmQueue: LlmQueueService,
   ) {}
 
   /** UC-04: персонализированные рекомендации по итогам попытки */
@@ -25,13 +25,14 @@ export class RecommendationsService {
     if (gaps.length === 0) return [];
 
     // LLM-генерация персонализированного плана развития (PROMPT_GENERATE_RECOMMENDATION — см. llm.service.ts)
-    const narrative = await this.llm.generateRecommendation(
+    const narrative = await this.llmQueue.generateRecommendation(
       gaps.map((g) => ({
         competencyName: g.competency.name,
         competencyArea: g.competency.area,
         actualGrade: g.actualGrade,
         targetGrade: g.targetGrade,
       })),
+      employeeId,
     );
 
     // Создаём одну запись рекомендации на каждый разрыв; narrative — общий план развития

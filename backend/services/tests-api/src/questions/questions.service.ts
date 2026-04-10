@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { LlmService } from '../llm/llm.service';
+import { LlmQueueService } from '../llm/llm-queue.service';
 import { CreateQuestionDto } from './dto/create-question.dto';
 import { GenerateQuestionDto } from './dto/generate-question.dto';
 import { randomUUID } from 'crypto';
@@ -9,7 +9,7 @@ import { randomUUID } from 'crypto';
 export class QuestionsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly llm: LlmService,
+    private readonly llmQueue: LlmQueueService,
   ) {}
 
   /** Список активных вопросов по компетенции (только текущие версии) */
@@ -70,10 +70,11 @@ export class QuestionsService {
     };
     const grade = difficultyToGrade[dto.difficulty] ?? 'K3';
 
-    const generated = await this.llm.generateQuestions(
+    const generated = await this.llmQueue.generateQuestions(
       { name: competency.name, area: competency.area, type: dto.type },
       grade,
       dto.count ?? 1,
+      createdBy,
     );
 
     // Сохраняем сгенерированные вопросы пакетом

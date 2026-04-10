@@ -2,7 +2,7 @@ import {
   BadRequestException, Injectable, NotFoundException, ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { LlmService } from '../llm/llm.service';
+import { LlmQueueService } from '../llm/llm-queue.service';
 import { SubmitAnswerDto } from './dto/submit-answer.dto';
 
 // Числовой порядок грейдов — нужен для сравнения actualGrade < targetGrade
@@ -14,7 +14,7 @@ const GRADE_ORDER: Record<string, number> = {
 export class AttemptsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly llm: LlmService,
+    private readonly llmQueue: LlmQueueService,
   ) {}
 
   /** UC-01: начать тест */
@@ -103,22 +103,14 @@ export class AttemptsService {
       },
     });
 
-    // Для open_text запускаем LLM-оценку асинхронно (не блокируем ответ)
+    // Для open_text ставим джоб в LlmQueue (fire-and-forget).
+    // Процессор сам обновит AnswerLog после получения ответа от LLM.
     // PROMPT_EVALUATE_ANSWER — см. llm.service.ts
     if (question.type === 'open_text' && dto.answerText) {
-      this.llm
-        .evaluateOpenAnswer(question.text, dto.answerText)
-        .then((result) =>
-          this.prisma.answerLog.update({
-            where: { logId: log.logId },
-            data: {
-              llmScore: result.score,
-              llmExplanation: result.explanation,
-            },
-          }),
-        )
+      this.llmQueue
+        .evaluateOpenAnswer(log.logId.toString(), question.text, dto.answerText, employeeId)
         .catch(() => {
-          // LLM недоступен — HR проверяет вручную (needsHrReview уже = true)
+          // Если Redis недоступен — needsHrReview=true уже выставлен, HR проверит вручную
         });
     }
 
