@@ -31,8 +31,12 @@ export class AttemptsController {
     return this.svc.findOne(id);
   }
 
-  /** UC-02: отправить ответ */
-  @Post(':id/answers')
+  /**
+   * UC-02: записать ответ на вопрос.
+   * Для закрытых вопросов возвращает is_correct и explanation.
+   */
+  @Post(':id/answer')
+  @ApiOperation({ summary: 'UC-02: записать ответ, вернуть is_correct и explanation' })
   submitAnswer(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SubmitAnswerDto,
@@ -41,8 +45,12 @@ export class AttemptsController {
     return this.svc.submitAnswer(id, dto, user.sub);
   }
 
-  /** UC-03: завершить тест */
-  @Patch(':id/finish')
+  /**
+   * UC-03: завершить тест — подсчёт баллов, грейд К1–К5, запись CompetencyGap.
+   * Вся операция в одной Prisma-транзакции (NFR-17).
+   */
+  @Post(':id/finish')
+  @ApiOperation({ summary: 'UC-03: завершить тест, подсчитать грейд и CompetencyGap' })
   finish(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: JwtPayload,
