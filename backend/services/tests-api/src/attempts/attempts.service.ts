@@ -104,13 +104,10 @@ export class AttemptsService {
     });
 
     // Для open_text запускаем LLM-оценку асинхронно (не блокируем ответ)
+    // PROMPT_EVALUATE_ANSWER — см. llm.service.ts
     if (question.type === 'open_text' && dto.answerText) {
       this.llm
-        .scoreOpenAnswer({
-          questionText: question.text,
-          answerText: dto.answerText,
-          explanation: question.explanation ?? '',
-        })
+        .evaluateOpenAnswer(question.text, dto.answerText)
         .then((result) =>
           this.prisma.answerLog.update({
             where: { logId: log.logId },

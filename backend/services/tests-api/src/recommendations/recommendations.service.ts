@@ -24,27 +24,28 @@ export class RecommendationsService {
     const gaps = attempt.competencyGaps;
     if (gaps.length === 0) return [];
 
-    // LLM-генерация рекомендаций (PROMPT_RECOMMENDATIONS — см. llm.service.ts)
-    const recommendations = await this.llm.generateRecommendations({
-      gaps: gaps.map((g) => ({
+    // LLM-генерация персонализированного плана развития (PROMPT_GENERATE_RECOMMENDATION — см. llm.service.ts)
+    const narrative = await this.llm.generateRecommendation(
+      gaps.map((g) => ({
         competencyName: g.competency.name,
         competencyArea: g.competency.area,
         actualGrade: g.actualGrade,
         targetGrade: g.targetGrade,
       })),
-    });
+    );
 
-    // Сохраняем рекомендации по каждому гэпу
+    // Создаём одну запись рекомендации на каждый разрыв; narrative — общий план развития
     const created = await Promise.all(
-      recommendations.map((rec) =>
+      gaps.map((g, i) =>
         this.prisma.recommendation.create({
           data: {
-            gapId: rec.gapId,
+            gapId: g.gapId,
             employeeId,
-            courseId: rec.courseId,
-            courseTitle: rec.courseTitle,
-            priority: rec.priority,
-            explanation: rec.explanation,
+            // courseId — временный идентификатор до интеграции с courses_db
+            courseId: `00000000-0000-0000-0000-${String(Date.now() + i).padStart(12, '0')}`,
+            courseTitle: `${g.competency.name} — план развития до ${g.targetGrade}`,
+            priority: i + 1,
+            explanation: narrative,
           },
         }),
       ),

@@ -62,13 +62,19 @@ export class QuestionsService {
     });
     if (!competency) throw new NotFoundException(`Competency ${dto.competencyId} not found`);
 
-    const generated = await this.llm.generateQuestions({
-      competencyName: competency.name,
-      competencyArea: competency.area,
-      difficulty: dto.difficulty,
-      type: dto.type,
-      count: dto.count ?? 1,
-    });
+    // Преобразуем difficulty → грейд для PROMPT_GENERATE_QUESTIONS (см. llm.service.ts)
+    const difficultyToGrade: Record<string, string> = {
+      easy: 'K2',
+      medium: 'K3',
+      hard: 'K4',
+    };
+    const grade = difficultyToGrade[dto.difficulty] ?? 'K3';
+
+    const generated = await this.llm.generateQuestions(
+      { name: competency.name, area: competency.area, type: dto.type },
+      grade,
+      dto.count ?? 1,
+    );
 
     // Сохраняем сгенерированные вопросы пакетом
     const created = await Promise.all(
