@@ -150,6 +150,68 @@ export class AttemptsService {
     return updated;
   }
 
+  /**
+   * UC-01: выдать следующий вопрос по текущему индексу попытки.
+   * isCorrect намеренно исключён из вариантов ответа.
+   */
+  async nextQuestion(attemptId: string, employeeId: string) {
+    const attempt = await this.prisma.testAttempt.findUnique({
+      where: { attemptId },
+      include: {
+        test: {
+          include: {
+            testQuestions: {
+              orderBy: { orderNumber: 'asc' },
+              include: {
+                question: {
+                  include: {
+                    answerOptions: { orderBy: { orderNumber: 'asc' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!attempt) throw new NotFoundException(`Attempt ${attemptId} not found`);
+    if (attempt.employeeId !== employeeId) throw new ForbiddenException();
+    if (attempt.status !== 'in_progress') {
+      throw new BadRequestException('Attempt is not in progress');
+    }
+
+    const questions = attempt.test.testQuestions;
+    const currentIndex = attempt.currentQuestionIndex;
+    const total = questions.length;
+
+    if (currentIndex >= total) {
+      return { done: true, current_index: currentIndex, total_questions: total };
+    }
+
+    const { question } = questions[currentIndex];
+
+    // Убираем isCorrect — сотрудник не должен видеть правильный ответ
+    const answerOptions = question.answerOptions.map(
+      ({ isCorrect: _ic, ...opt }) => opt,
+    );
+
+    return {
+      done: false,
+      attempt_id: attemptId,
+      current_index: currentIndex,
+      total_questions: total,
+      question: {
+        question_id: question.questionId,
+        text: question.text,
+        type: question.type,
+        difficulty: question.difficulty,
+        max_score: question.maxScore,
+        answer_options: answerOptions,
+      },
+    };
+  }
+
   private calculateGrade(score: number, max: number): 'K1' | 'K2' | 'K3' | 'K4' | 'K5' {
     if (max === 0) return 'K1';
     const pct = (score / max) * 100;

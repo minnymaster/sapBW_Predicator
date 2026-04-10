@@ -2,10 +2,11 @@ import {
   Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AttemptsService } from './attempts.service';
 import { SubmitAnswerDto } from './dto/submit-answer.dto';
-import { CurrentUser } from '../auth/decorators';
+import { CurrentUser, Roles } from '../auth/decorators';
+import { RolesGuard } from '../auth/roles.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 
 @ApiTags('attempts')
@@ -47,5 +48,17 @@ export class AttemptsController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.svc.finish(id, user.sub);
+  }
+
+  /** UC-01: следующий вопрос в попытке — только роль employee */
+  @Get(':id/next-question')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('employee')
+  @ApiOperation({ summary: 'UC-01: получить следующий вопрос попытки' })
+  nextQuestion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.svc.nextQuestion(id, user.sub);
   }
 }

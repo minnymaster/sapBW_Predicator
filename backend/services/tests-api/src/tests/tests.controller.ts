@@ -3,19 +3,38 @@ import {
   ParseUUIDPipe, Patch, Post, UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TestsService } from './tests.service';
 import { CreateTestDto } from './dto/create-test.dto';
 import { CurrentUser, Roles } from '../auth/decorators';
 import { RolesGuard } from '../auth/roles.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
+import { AttemptsService } from '../attempts/attempts.service';
 
 @ApiTags('tests')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 @Controller('tests')
 export class TestsController {
-  constructor(private readonly svc: TestsService) {}
+  constructor(
+    private readonly svc: TestsService,
+    private readonly attemptsSvc: AttemptsService,
+  ) {}
+
+  /** UC-01: начать тест — только роль employee */
+  @Post(':id/start')
+  @Roles('employee')
+  @ApiOperation({ summary: 'UC-01: создать попытку прохождения теста' })
+  async start(
+    @Param('id', ParseUUIDPipe) testId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const attempt = await this.attemptsSvc.start(testId, user.sub);
+    return {
+      attempt_id: attempt.attemptId,
+      time_left_sec: attempt.timeLeftSec,
+    };
+  }
 
   @Get()
   findAll() {
