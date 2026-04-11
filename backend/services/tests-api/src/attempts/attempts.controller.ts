@@ -8,13 +8,17 @@ import { SubmitAnswerDto } from './dto/submit-answer.dto';
 import { CurrentUser, Roles } from '../auth/decorators';
 import { RolesGuard } from '../auth/roles.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
+import { RecommendationsService } from '../recommendations/recommendations.service';
 
 @ApiTags('attempts')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'))
 @Controller('attempts')
 export class AttemptsController {
-  constructor(private readonly svc: AttemptsService) {}
+  constructor(
+    private readonly svc: AttemptsService,
+    private readonly recommendationsSvc: RecommendationsService,
+  ) {}
 
   /** UC-01: начать тест */
   @Post()
@@ -56,6 +60,20 @@ export class AttemptsController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.svc.finish(id, user.sub);
+  }
+
+  /**
+   * UC-04: получить рекомендации по завершённой попытке.
+   * Если рекомендации ещё не созданы — запускает LLM-задачу через очередь.
+   * Возвращает [{course_id, priority, explanation}].
+   */
+  @Get(':id/recommendations')
+  @ApiOperation({ summary: 'UC-04: рекомендации по результатам попытки' })
+  getRecommendations(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.recommendationsSvc.getOrGenerateForAttempt(id, user.sub);
   }
 
   /** UC-01: следующий вопрос в попытке — только роль employee */
