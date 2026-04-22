@@ -10,6 +10,8 @@
     "test": "jest",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "prisma:generate": "prisma generate",
+    "prisma:generate:cert": "prisma generate --schema=prisma/certification.schema.prisma",
+    "prisma:generate:all": "npm run prisma:generate && npm run prisma:generate:cert",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:studio": "prisma studio"
   },

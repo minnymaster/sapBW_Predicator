@@ -1,0 +1,152 @@
+// =============================================================================
+// Certification DB — частичная схема для manage-api
+// Только для prisma generate (manage-api НЕ запускает миграции на certification_db).
+// Миграции — ответственность tests-api.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/certification-prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CERTIFICATION_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS (должны точно совпадать с tests-api/prisma/schema.prisma)
+// ---------------------------------------------------------------------------
+
+enum CompetencyArea {
+  data_modeling
+  abap
+  administration
+  bw4hana
+  business_analytics
+
+  @@map("competency_area")
+}
+
+enum CompetencyGrade {
+  K1
+  K2
+  K3
+  K4
+  K5
+
+  @@map("competency_grade")
+}
+
+enum QuestionType {
+  single_choice
+  multiple_choice
+  short_answer
+  open_text
+
+  @@map("question_type")
+}
+
+enum DifficultyLevel {
+  easy
+  medium
+  hard
+
+  @@map("difficulty_level")
+}
+
+// ---------------------------------------------------------------------------
+// COMPETENCY — только поля, нужные для валидации FK при создании вопроса
+// ---------------------------------------------------------------------------
+
+model Competency {
+  competencyId String         @id @db.Uuid
+  name         String         @unique @db.VarChar(300)
+  area         CompetencyArea
+  isActive     Boolean        @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  questions Question[]
+
+  @@map("competency")
+}
+
+// ---------------------------------------------------------------------------
+// QUESTION — банк вопросов с версионированием (NFR-18)
+// root_id — логический ID (не меняется между версиями)
+// question_id — физический ID конкретной версии
+// ---------------------------------------------------------------------------
+
+model Question {
+  questionId     String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rootId         String          @db.Uuid
+  versionNumber  Int             @default(1)
+  competencyId   String          @db.Uuid
+  type           QuestionType
+  difficulty     DifficultyLevel @default(medium)
+  text           String
+  explanation    String?
+  maxScore       Decimal         @default(1.0) @db.Decimal(5, 2)
+  isCurrent      Boolean         @default(true)
+  isLlmGenerated Boolean         @default(false)
+  createdBy      String?         @db.Uuid
+  createdAt      DateTime        @default(now()) @db.Timestamptz(6)
+
+  competency    Competency     @relation(fields: [competencyId], references: [competencyId])
+  answerOptions AnswerOption[]
+  testQuestions TestQuestion[]
+
+  @@unique([rootId, versionNumber])
+  @@index([competencyId])
+  @@index([rootId])
+  @@map("question")
+}
+
+// ---------------------------------------------------------------------------
+// ANSWER_OPTION — варианты ответов для закрытых вопросов
+// ---------------------------------------------------------------------------
+
+model AnswerOption {
+  optionId    String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  questionId  String  @db.Uuid
+  text        String
+  isCorrect   Boolean @default(false)
+  orderNumber Int     @default(0)
+
+  question Question @relation(fields: [questionId], references: [questionId], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("answer_option")
+}
+
+// ---------------------------------------------------------------------------
+// TEST — только isActive нужен для проверки при удалении вопроса
+// ---------------------------------------------------------------------------
+
+model Test {
+  testId   String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  isActive Boolean @default(false)
+
+  testQuestions TestQuestion[]
+
+  @@map("test")
+}
+
+// ---------------------------------------------------------------------------
+// TEST_QUESTION — M:N связь тест ↔ конкретная версия вопроса
+// Используется manage-api для проверки: нельзя удалить вопрос из активного теста
+// ---------------------------------------------------------------------------
+
+model TestQuestion {
+  testId     String @db.Uuid
+  questionId String @db.Uuid
+
+  test     Test     @relation(fields: [testId], references: [testId], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [questionId])
+
+  @@id([testId, questionId])
+  @@index([testId])
+  @@map("test_question")
+}
