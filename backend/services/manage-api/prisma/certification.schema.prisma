@@ -122,12 +122,22 @@ model AnswerOption {
 }
 
 // ---------------------------------------------------------------------------
-// TEST — только isActive нужен для проверки при удалении вопроса
+// TEST — полная схема (совпадает с tests-api). Manage-api создаёт и редактирует тесты.
+// createdBy → company_db.employee (не FK, другая БД)
 // ---------------------------------------------------------------------------
 
 model Test {
-  testId   String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  isActive Boolean @default(false)
+  testId       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title        String  @db.VarChar(300)
+  description  String?
+  timeLimitSec Int?
+  passingScore Decimal @default(70.0) @db.Decimal(5, 2)
+  maxAttempts  Int     @default(1)
+  isActive     Boolean @default(false)
+  createdBy    String? @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   testQuestions TestQuestion[]
 
@@ -135,13 +145,15 @@ model Test {
 }
 
 // ---------------------------------------------------------------------------
-// TEST_QUESTION — M:N связь тест ↔ конкретная версия вопроса
-// Используется manage-api для проверки: нельзя удалить вопрос из активного теста
+// TEST_QUESTION — M:N тест ↔ конкретная версия вопроса
+// orderNumber — порядок показа вопроса, weight — вес при подсчёте баллов
 // ---------------------------------------------------------------------------
 
 model TestQuestion {
-  testId     String @db.Uuid
-  questionId String @db.Uuid
+  testId      String   @db.Uuid
+  questionId  String   @db.Uuid
+  orderNumber Int      @default(0)
+  weight      Decimal? @db.Decimal(5, 2)
 
   test     Test     @relation(fields: [testId], references: [testId], onDelete: Cascade)
   question Question @relation(fields: [questionId], references: [questionId])
