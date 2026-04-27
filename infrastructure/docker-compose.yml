@@ -73,6 +73,52 @@ services:
       - sapbw_net
 
   # ---------------------------------------------------------------------------
+  # redis — кэш и Pub/Sub для manage-api, dashboard-api
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: sapbw_redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # dashboard-api — NestJS, UC-13 (Director SPA, async tasks, Redis cache)
+  # ---------------------------------------------------------------------------
+  dashboard-api:
+    build:
+      context: ../backend/services/dashboard-api
+      dockerfile: Dockerfile
+    container_name: sapbw_dashboard_api
+    restart: unless-stopped
+    environment:
+      PORT: 3005
+      NODE_ENV: production
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REPORTS_API_URL: "http://reports-api:3004"
+      TESTS_API_URL: "http://tests-api:3001"
+      HTTP_TIMEOUT_MS: 10000
+    ports:
+      - "3005:3005"
+    depends_on:
+      redis:
+        condition: service_healthy
+      reports-api:
+        condition: service_started
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
   # reports-api — NestJS, UC-13, UC-14 (аналитика и экспорт)
   # ---------------------------------------------------------------------------
   reports-api:
