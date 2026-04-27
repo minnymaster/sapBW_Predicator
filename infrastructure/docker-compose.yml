@@ -73,6 +73,31 @@ services:
       - sapbw_net
 
   # ---------------------------------------------------------------------------
+  # reports-api — NestJS, UC-13, UC-14 (аналитика и экспорт)
+  # ---------------------------------------------------------------------------
+  reports-api:
+    build:
+      context: ../backend/services/reports-api
+      dockerfile: Dockerfile
+    container_name: sapbw_reports_api
+    restart: unless-stopped
+    environment:
+      COMPANY_DATABASE_URL: "postgresql://company_user:company_pass@company_db:5432/company_db?schema=public"
+      CERTIFICATION_DATABASE_URL: "postgresql://certification_user:certification_pass@certification_db:5432/certification_db?schema=public"
+      PORT: 3004
+      NODE_ENV: production
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
+    ports:
+      - "3004:3004"
+    depends_on:
+      company_db:
+        condition: service_healthy
+      certification_db:
+        condition: service_healthy
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
   # tests-api — NestJS, UC-01–UC-03, UC-05
   # ---------------------------------------------------------------------------
   tests-api:

@@ -1,0 +1,129 @@
+// =============================================================================
+// Certification DB — частичная схема для reports-api (только чтение)
+// Миграции — ответственность tests-api.
+// Включены только модели, нужные для аналитических отчётов.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/certification-prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CERTIFICATION_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum CompetencyArea {
+  data_modeling
+  abap
+  administration
+  bw4hana
+  business_analytics
+
+  @@map("competency_area")
+}
+
+enum CompetencyGrade {
+  K1
+  K2
+  K3
+  K4
+  K5
+
+  @@map("competency_grade")
+}
+
+enum AttemptStatus {
+  in_progress
+  completed
+  timed_out
+  cancelled
+
+  @@map("attempt_status")
+}
+
+// ---------------------------------------------------------------------------
+// COMPETENCY
+// ---------------------------------------------------------------------------
+
+model Competency {
+  competencyId String         @id @db.Uuid
+  name         String         @unique @db.VarChar(300)
+  area         CompetencyArea
+  isActive     Boolean        @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  competencyResults CompetencyResult[]
+
+  @@map("competency")
+}
+
+// ---------------------------------------------------------------------------
+// TEST
+// ---------------------------------------------------------------------------
+
+model Test {
+  testId       String  @id @db.Uuid
+  title        String  @db.VarChar(300)
+  isActive     Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  attempts TestAttempt[]
+
+  @@map("test")
+}
+
+// ---------------------------------------------------------------------------
+// TEST_ATTEMPT
+// ---------------------------------------------------------------------------
+
+model TestAttempt {
+  attemptId     String          @id @db.Uuid
+  testId        String          @db.Uuid
+  employeeId    String          @db.Uuid
+  assignmentId  String?         @db.Uuid
+  status        AttemptStatus   @default(in_progress)
+  totalScore    Decimal?        @db.Decimal(8, 2)
+  maxScore      Decimal?        @db.Decimal(8, 2)
+  gradeAchieved CompetencyGrade?
+  startedAt     DateTime        @default(now()) @db.Timestamptz(6)
+  finishedAt    DateTime?       @db.Timestamptz(6)
+  createdAt     DateTime        @default(now()) @db.Timestamptz(6)
+
+  test              Test               @relation(fields: [testId], references: [testId])
+  competencyResults CompetencyResult[]
+
+  @@index([employeeId])
+  @@index([testId])
+  @@map("test_attempt")
+}
+
+// ---------------------------------------------------------------------------
+// COMPETENCY_RESULT
+// ---------------------------------------------------------------------------
+
+model CompetencyResult {
+  resultId      String          @id @db.Uuid
+  attemptId     String          @db.Uuid
+  competencyId  String          @db.Uuid
+  score         Decimal         @db.Decimal(5, 2)
+  maxScore      Decimal         @db.Decimal(5, 2)
+  gradeAchieved CompetencyGrade
+  calculatedAt  DateTime        @default(now()) @db.Timestamptz(6)
+
+  attempt    TestAttempt @relation(fields: [attemptId], references: [attemptId], onDelete: Cascade)
+  competency Competency  @relation(fields: [competencyId], references: [competencyId])
+
+  @@unique([attemptId, competencyId])
+  @@index([attemptId])
+  @@map("competency_result")
+}
