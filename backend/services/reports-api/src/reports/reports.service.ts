@@ -12,6 +12,7 @@ import {
 import { KpiProgressQueryDto } from './dto/kpi-progress-query.dto';
 import { KpiProgressItemDto, KpiProgressResponseDto } from './dto/kpi-progress.dto';
 import { ExportQueryDto, ReportType } from './dto/export-query.dto';
+import { AssignmentStatsDto } from './dto/assignment-stats.dto';
 
 // ---------------------------------------------------------------------------
 // Raw row types returned by $queryRaw
@@ -250,6 +251,37 @@ export class ReportsService {
   }
 
   // ---------------------------------------------------------------------------
+  // GET /v1/reports/assignment-stats
+  // Сводка статусов назначений тестов: просроченные, в процессе, завершённые.
+  // $queryRaw — GROUP BY на enum с CAST, ORM не генерирует компактный запрос.
+  // ---------------------------------------------------------------------------
+
+  async getAssignmentStats(): Promise<AssignmentStatsDto> {
+    interface StatusRow { status: string; cnt: bigint }
+
+    const rows = await this.prisma.$queryRaw<StatusRow[]>(Prisma.sql`
+      SELECT status::text AS status, COUNT(*)::bigint AS cnt
+      FROM test_assignment
+      GROUP BY status
+    `);
+
+    const byStatus = { pending: 0, in_progress: 0, completed: 0, overdue: 0, cancelled: 0 };
+    let total = 0;
+    for (const r of rows) {
+      const count = Number(r.cnt);
+      const key = r.status as keyof typeof byStatus;
+      if (key in byStatus) byStatus[key] = count;
+      total += count;
+    }
+
+    // «Активные» = pending + in_progress + overdue (назначения, которые ещё не закрыты)
+    const active = byStatus.pending + byStatus.in_progress + byStatus.overdue;
+    const overduePercent = active > 0 ? Math.round((byStatus.overdue / active) * 10000) / 100 : 0;
+
+    return { total, by_status: byStatus, overdue_percent: overduePercent };
+  }
+
+  // ---------------------------------------------------------------------------
   // GET /v1/reports/export?format=xlsx
   // Генерация Excel-книги с несколькими листами через exceljs.
   // ---------------------------------------------------------------------------
@@ -434,6 +466,189 @@ export class ReportsService {
     sheet.autoFilter = {
       from: { row: 1, column: 1 },
       to: { row: dataRows + 1, column: sheet.columnCount },
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /v1/reports/department-heatmap
+  // Средний грейд по матрице подразделение × компетенция. Для директора (UC-15).
+  // ---------------------------------------------------------------------------
+
+  async getDepartmentHeatmap() {
+    interface HeatmapRow {
+      department_id: string;
+      department_name: string;
+      competency_id: string;
+      competency_name: string;
+      avg_grade: number;
+      employee_count: bigint;
+    }
+
+    const cells = await this.prisma.$queryRaw<HeatmapRow[]>(Prisma.sql`
+      SELECT
+        e.department_id::text            AS department_id,
+        d.name                           AS department_name,
+        cp.competency_id::text           AS competency_id,
+        cp.competency_name               AS competency_name,
+        AVG(CASE cp.grade::text
+          WHEN 'K1' THEN 1.0 WHEN 'K2' THEN 2.0 WHEN 'K3' THEN 3.0
+          WHEN 'K4' THEN 4.0 WHEN 'K5' THEN 5.0
+        END)::float                      AS avg_grade,
+        COUNT(*)::bigint                 AS employee_count
+      FROM competency_profile cp
+      JOIN employee e ON cp.employee_id = e.employee_id
+      JOIN department d ON e.department_id = d.department_id
+      WHERE cp.valid_to IS NULL AND e.is_active = true AND e.department_id IS NOT NULL
+      GROUP BY e.department_id, d.name, cp.competency_id, cp.competency_name
+      ORDER BY d.name, cp.competency_name
+    `);
+
+    const deptMap = new Map<string, string>();
+    const compMap = new Map<string, string>();
+    for (const c of cells) {
+      deptMap.set(c.department_id, c.department_name);
+      compMap.set(c.competency_id, c.competency_name);
+    }
+
+    return {
+      departments: [...deptMap.entries()].map(([id, name]) => ({ id, name })),
+      competencies: [...compMap.entries()].map(([id, name]) => ({ id, name })),
+      cells: cells.map((c) => ({
+        department_id: c.department_id,
+        competency_id: c.competency_id,
+        avg_grade: Number(c.avg_grade),
+        employee_count: Number(c.employee_count),
+      })),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /v1/reports/grade-trend?months=12
+  // Ежемесячное распределение грейдов за последние N месяцев (UC-15).
+  // ---------------------------------------------------------------------------
+
+  async getGradeTrend(months = 12) {
+    interface TrendRow {
+      month: string;
+      k1: bigint; k2: bigint; k3: bigint; k4: bigint; k5: bigint;
+    }
+
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - months);
+
+    const rows = await this.prisma.$queryRaw<TrendRow[]>(Prisma.sql`
+      SELECT
+        to_char(date_trunc('month', cp.assessed_at), 'YYYY-MM')   AS month,
+        COUNT(*) FILTER (WHERE cp.grade = 'K1')::bigint            AS k1,
+        COUNT(*) FILTER (WHERE cp.grade = 'K2')::bigint            AS k2,
+        COUNT(*) FILTER (WHERE cp.grade = 'K3')::bigint            AS k3,
+        COUNT(*) FILTER (WHERE cp.grade = 'K4')::bigint            AS k4,
+        COUNT(*) FILTER (WHERE cp.grade = 'K5')::bigint            AS k5
+      FROM competency_profile cp
+      JOIN employee e ON cp.employee_id = e.employee_id
+      WHERE e.is_active = true AND cp.assessed_at >= ${cutoff}
+      GROUP BY date_trunc('month', cp.assessed_at)
+      ORDER BY month
+    `);
+
+    return {
+      data: rows.map((r) => ({
+        month: r.month,
+        k1: Number(r.k1),
+        k2: Number(r.k2),
+        k3: Number(r.k3),
+        k4: Number(r.k4),
+        k5: Number(r.k5),
+      })),
+      months,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /v1/reports/alerts
+  // Критические события: просрочки, высокий K1, KPI не выполнены (UC-15).
+  // ---------------------------------------------------------------------------
+
+  async getAlerts() {
+    type Severity = 'critical' | 'warning' | 'info';
+    const alerts: { id: string; severity: Severity; title: string; description: string; category: string; value?: number }[] = [];
+
+    const [overdueRow] = await this.prisma.$queryRaw<[{ cnt: bigint }]>(Prisma.sql`
+      SELECT COUNT(*)::bigint AS cnt FROM test_assignment WHERE status = 'overdue'
+    `);
+    const overdueCount = Number(overdueRow.cnt);
+    if (overdueCount > 0) {
+      alerts.push({
+        id: 'overdue-assignments',
+        severity: overdueCount > 20 ? 'critical' : 'warning',
+        title: `${overdueCount} просроченных назначений`,
+        description: 'Сотрудники не завершили тесты в установленный срок',
+        category: 'assignments',
+        value: overdueCount,
+      });
+    }
+
+    interface K1Row { name: string; k1_pct: number }
+    const k1Rows = await this.prisma.$queryRaw<K1Row[]>(Prisma.sql`
+      SELECT
+        cp.competency_name AS name,
+        ROUND(
+          COUNT(*) FILTER (WHERE cp.grade = 'K1')::decimal
+          / NULLIF(COUNT(*), 0) * 100, 1
+        )::float AS k1_pct
+      FROM competency_profile cp
+      JOIN employee e ON cp.employee_id = e.employee_id
+      WHERE cp.valid_to IS NULL AND e.is_active = true
+      GROUP BY cp.competency_name
+      HAVING COUNT(*) FILTER (WHERE cp.grade = 'K1')::decimal
+             / NULLIF(COUNT(*), 0) > 0.4
+      ORDER BY k1_pct DESC LIMIT 5
+    `);
+    for (const row of k1Rows) {
+      alerts.push({
+        id: `k1-high-${row.name.replace(/\s+/g, '-')}`,
+        severity: row.k1_pct > 60 ? 'critical' : 'warning',
+        title: `Критический K1: ${row.name}`,
+        description: `${row.k1_pct}% сотрудников на начальном грейде — требуется развитие`,
+        category: 'competency',
+        value: row.k1_pct,
+      });
+    }
+
+    const kpiData = await this.getKpiProgress({});
+    const failedKpi = kpiData.data.filter((k) => !k.is_on_track);
+    if (failedKpi.length > 0) {
+      const names = failedKpi.slice(0, 3).map((k) => k.competency_name).join(', ');
+      alerts.push({
+        id: 'kpi-not-on-track',
+        severity: failedKpi.length > 3 ? 'critical' : 'warning',
+        title: `${failedKpi.length} KPI не достигают цели`,
+        description: names + (failedKpi.length > 3 ? ' и др.' : ''),
+        category: 'kpi',
+        value: failedKpi.length,
+      });
+    }
+
+    const [pendingRow] = await this.prisma.$queryRaw<[{ cnt: bigint }]>(Prisma.sql`
+      SELECT COUNT(*)::bigint AS cnt FROM test_assignment WHERE status = 'pending'
+    `);
+    const pendingCount = Number(pendingRow.cnt);
+    if (pendingCount > 0) {
+      alerts.push({
+        id: 'pending-assignments',
+        severity: 'info',
+        title: `${pendingCount} назначений ожидают начала`,
+        description: 'Сотрудники ещё не приступили к назначенным тестам',
+        category: 'assignments',
+        value: pendingCount,
+      });
+    }
+
+    return {
+      alerts,
+      critical_count: alerts.filter((a) => a.severity === 'critical').length,
+      warning_count: alerts.filter((a) => a.severity === 'warning').length,
+      generated_at: new Date().toISOString(),
     };
   }
 }

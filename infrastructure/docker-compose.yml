@@ -6,7 +6,7 @@ services:
   company_db:
     image: postgres:16-alpine
     container_name: sapbw_company_db
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB:       company_db
       POSTGRES_USER:     company_user
@@ -21,6 +21,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 30s
     networks:
       - sapbw_net
 
@@ -30,7 +31,7 @@ services:
   courses_db:
     image: postgres:16-alpine
     container_name: sapbw_courses_db
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB:       courses_db
       POSTGRES_USER:     courses_user
@@ -45,6 +46,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 30s
     networks:
       - sapbw_net
 
@@ -54,7 +56,7 @@ services:
   certification_db:
     image: postgres:16-alpine
     container_name: sapbw_certification_db
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB:       certification_db
       POSTGRES_USER:     certification_user
@@ -69,16 +71,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 30s
     networks:
       - sapbw_net
 
   # ---------------------------------------------------------------------------
-  # redis — кэш и Pub/Sub для manage-api, dashboard-api
+  # redis — кэш и Pub/Sub для manage-api, dashboard-api; Bull-очереди tests-api
   # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: sapbw_redis
-    restart: unless-stopped
+    restart: always
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "6379:6379"
@@ -87,6 +90,144 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 10s
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # tests-api — NestJS, UC-01–UC-03, UC-05
+  # Зависит от certification_db и redis (Bull-очереди LLM-задач).
+  # ---------------------------------------------------------------------------
+  tests-api:
+    build:
+      context: ../backend/services/tests-api
+      dockerfile: Dockerfile
+    container_name: sapbw_tests_api
+    restart: always
+    environment:
+      CERTIFICATION_DATABASE_URL: "postgresql://certification_user:certification_pass@certification_db:5432/certification_db?schema=public"
+      PORT: 3001
+      NODE_ENV: production
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      LLM_PROVIDER: "${LLM_PROVIDER:-groq}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.groq.com/openai/v1}"
+      LLM_API_KEY: "${LLM_API_KEY}"
+      GROQ_API_KEY: "${LLM_API_KEY}"
+      LLM_MODEL: "${LLM_MODEL:-llama-3.1-70b-versatile}"
+    ports:
+      - "3001:3001"
+    depends_on:
+      certification_db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Подключаемся через Node.js HTTP (всегда доступен в контейнере).
+      # statusCode < 500 означает сервер отвечает (404 от GlobalPrefix /v1 — норма).
+      test: ["CMD-SHELL", "node -e \"const h=require('http');h.get({host:'127.0.0.1',port:3001,path:'/'},r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # courses-api — NestJS, UC-04, UC-10 (каталог курсов и материалов)
+  # ---------------------------------------------------------------------------
+  courses-api:
+    build:
+      context: ../backend/services/courses-api
+      dockerfile: Dockerfile
+    container_name: sapbw_courses_api
+    restart: always
+    environment:
+      COURSES_DATABASE_URL: "postgresql://courses_user:courses_pass@courses_db:5432/courses_db?schema=public"
+      PORT: 3003
+      NODE_ENV: production
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
+    ports:
+      - "3003:3003"
+    depends_on:
+      courses_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const h=require('http');h.get({host:'127.0.0.1',port:3003,path:'/'},r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # manage-api — NestJS, UC-07 вопросы, UC-08 тесты (CRUD), UC-11 назначения
+  # ---------------------------------------------------------------------------
+  manage-api:
+    build:
+      context: ../backend/services/manage-api
+      dockerfile: Dockerfile
+    container_name: sapbw_manage_api
+    restart: always
+    environment:
+      COMPANY_DATABASE_URL:        "postgresql://company_user:company_pass@company_db:5432/company_db?schema=public"
+      COURSES_DATABASE_URL:        "postgresql://courses_user:courses_pass@courses_db:5432/courses_db?schema=public"
+      CERTIFICATION_DATABASE_URL:  "postgresql://certification_user:certification_pass@certification_db:5432/certification_db?schema=public"
+      PORT: 3002
+      NODE_ENV: production
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "3002:3002"
+    depends_on:
+      company_db:
+        condition: service_healthy
+      courses_db:
+        condition: service_healthy
+      certification_db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const h=require('http');h.get({host:'127.0.0.1',port:3002,path:'/'},r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # reports-api — NestJS, UC-13, UC-14 (аналитика и экспорт)
+  # ---------------------------------------------------------------------------
+  reports-api:
+    build:
+      context: ../backend/services/reports-api
+      dockerfile: Dockerfile
+    container_name: sapbw_reports_api
+    restart: always
+    environment:
+      COMPANY_DATABASE_URL: "postgresql://company_user:company_pass@company_db:5432/company_db?schema=public"
+      CERTIFICATION_DATABASE_URL: "postgresql://certification_user:certification_pass@certification_db:5432/certification_db?schema=public"
+      PORT: 3004
+      NODE_ENV: production
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
+    ports:
+      - "3004:3004"
+    depends_on:
+      company_db:
+        condition: service_healthy
+      certification_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const h=require('http');h.get({host:'127.0.0.1',port:3004,path:'/'},r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     networks:
       - sapbw_net
 
@@ -98,7 +239,7 @@ services:
       context: ../backend/services/dashboard-api
       dockerfile: Dockerfile
     container_name: sapbw_dashboard_api
-    restart: unless-stopped
+    restart: always
     environment:
       PORT: 3005
       NODE_ENV: production
@@ -114,58 +255,184 @@ services:
       redis:
         condition: service_healthy
       reports-api:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const h=require('http');h.get({host:'127.0.0.1',port:3005,path:'/'},r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     networks:
       - sapbw_net
 
   # ---------------------------------------------------------------------------
-  # reports-api — NestJS, UC-13, UC-14 (аналитика и экспорт)
+  # learning-gateway — Traefik v3, Learning API GW
+  # HTTP :8080 → 301 HTTPS :8443
+  # Маршруты: /v1/tests/*, /v1/attempts/* → tests-api
+  #           /v1/courses/*               → courses-api
+  # --ping + --ping.entryPoint=ping открывают GET :8082/ping для healthcheck.
   # ---------------------------------------------------------------------------
-  reports-api:
-    build:
-      context: ../backend/services/reports-api
-      dockerfile: Dockerfile
-    container_name: sapbw_reports_api
-    restart: unless-stopped
-    environment:
-      COMPANY_DATABASE_URL: "postgresql://company_user:company_pass@company_db:5432/company_db?schema=public"
-      CERTIFICATION_DATABASE_URL: "postgresql://certification_user:certification_pass@certification_db:5432/certification_db?schema=public"
-      PORT: 3004
-      NODE_ENV: production
-      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
+  learning-gateway:
+    image: traefik:v3.1
+    container_name: sapbw_learning_gw
+    restart: always
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+      - "--ping=true"
+      - "--entryPoints.ping.address=:8082"
+      - "--ping.entryPoint=ping"
     ports:
-      - "3004:3004"
+      - "8080:80"    # HTTP (redirect → HTTPS)
+      - "8443:443"   # HTTPS (TLS 1.3)
+    volumes:
+      - ../backend/gateways/learning/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ../backend/gateways/learning/dynamic:/etc/traefik/dynamic:ro
     depends_on:
-      company_db:
+      tests-api:
         condition: service_healthy
-      certification_db:
+      courses-api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8082/ping 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - sapbw_net
 
   # ---------------------------------------------------------------------------
-  # tests-api — NestJS, UC-01–UC-03, UC-05
+  # manage-gateway — Traefik v3, Manage API GW
+  # HTTP :8180 → 301 HTTPS :8543
+  # Маршруты: /v1/questions, /v1/tests, /v1/assignments, /v1/auth → manage-api
+  # Audit log: manage-write@file записи → manage_logs volume
+  # --ping + --ping.entryPoint=ping открывают GET :8082/ping для healthcheck.
   # ---------------------------------------------------------------------------
-  tests-api:
-    build:
-      context: ../backend/services/tests-api
-      dockerfile: Dockerfile
-    container_name: sapbw_tests_api
-    restart: unless-stopped
-    environment:
-      CERTIFICATION_DATABASE_URL: "postgresql://certification_user:certification_pass@certification_db:5432/certification_db?schema=public"
-      PORT: 3001
-      NODE_ENV: production
-      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY}"
-      LLM_PROVIDER: "${LLM_PROVIDER:-groq}"
-      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.groq.com/openai/v1}"
-      LLM_API_KEY: "${LLM_API_KEY}"
-      LLM_MODEL: "${LLM_MODEL:-llama-3.1-70b-versatile}"
+  manage-gateway:
+    image: traefik:v3.1
+    container_name: sapbw_manage_gw
+    restart: always
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+      - "--ping=true"
+      - "--entryPoints.ping.address=:8082"
+      - "--ping.entryPoint=ping"
     ports:
-      - "3001:3001"
+      - "8180:80"    # HTTP (redirect → HTTPS)
+      - "8543:443"   # HTTPS (TLS 1.3)
+    volumes:
+      - ../backend/gateways/manage/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ../backend/gateways/manage/dynamic:/etc/traefik/dynamic:ro
+      - manage_logs:/var/log/traefik
     depends_on:
-      certification_db:
+      manage-api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8082/ping 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # manage-audit-log — NFR-09: фильтрует manage-access.log по RouterName
+  # Пишет только записи с RouterName содержащим "write" → manage-audit.log
+  # Формат записи (JSON): time, RouterName, RequestMethod, RequestPath,
+  #   DownstreamStatus, Duration, request_X-User-ID, request_X-User-Role
+  # ---------------------------------------------------------------------------
+  manage-audit-log:
+    image: alpine:3.19
+    container_name: sapbw_manage_audit_log
+    restart: always
+    depends_on:
+      manage-gateway:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache jq
+        echo "[audit] waiting for manage-access.log..."
+        until [ -f /var/log/traefik/manage-access.log ]; do sleep 2; done
+        echo "[audit] streaming manage-write events → manage-audit.log"
+        tail -n 0 -F /var/log/traefik/manage-access.log \
+          | jq --unbuffered -c \
+              'select(.RouterName | strings | test("write"))' \
+          >> /var/log/traefik/manage-audit.log
+    volumes:
+      - manage_logs:/var/log/traefik
+    # Проверяем, что процесс jq (фильтр аудита) жив.
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -q '[j]q' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # analytics-cache — Nginx reverse proxy с двухуровневым кэшем
+  # /v1/dashboard/ → cache 5 min  → dashboard-api:3005
+  # /v1/reports/   → cache 30 min → reports-api:3004
+  # Кэш хранится в volume analytics_cache (persists between restarts)
+  # ---------------------------------------------------------------------------
+  analytics-cache:
+    image: nginx:1.27-alpine
+    container_name: sapbw_analytics_cache
+    restart: always
+    volumes:
+      - ../backend/gateways/analytics/nginx/analytics-cache.conf:/etc/nginx/conf.d/analytics-cache.conf:ro
+      - analytics_cache:/var/cache/nginx
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+      reports-api:
+        condition: service_healthy
+    # Принимаем коды 0 (2xx) и 8 (4xx от Nginx — значит сервер жив, маршрут не найден).
+    # Коды 1/4/5/7 — сетевая ошибка → unhealthy.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:80/ 2>&1; ret=$$?; [ $$ret -eq 0 ] || [ $$ret -eq 8 ] || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - sapbw_net
+
+  # ---------------------------------------------------------------------------
+  # analytics-gateway — Traefik v3, Analytics API GW
+  # HTTP :8280 → 301 HTTPS :8643
+  # Маршруты: /v1/dashboard → analytics-cache → dashboard-api (CB + cache 5m)
+  #           /v1/reports   → analytics-cache → reports-api   (CB + cache 30m)
+  # --ping + --ping.entryPoint=ping открывают GET :8082/ping для healthcheck.
+  # ---------------------------------------------------------------------------
+  analytics-gateway:
+    image: traefik:v3.1
+    container_name: sapbw_analytics_gw
+    restart: always
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+      - "--ping=true"
+      - "--entryPoints.ping.address=:8082"
+      - "--ping.entryPoint=ping"
+    ports:
+      - "8280:80"    # HTTP (redirect → HTTPS)
+      - "8643:443"   # HTTPS (TLS 1.3)
+    volumes:
+      - ../backend/gateways/analytics/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ../backend/gateways/analytics/dynamic:/etc/traefik/dynamic:ro
+    depends_on:
+      analytics-cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8082/ping 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - sapbw_net
 
@@ -173,6 +440,8 @@ volumes:
   company_db_data:
   courses_db_data:
   certification_db_data:
+  manage_logs:      # audit trail: manage-access.log + manage-audit.log (NFR-09)
+  analytics_cache:  # Nginx proxy_cache для dashboard (5 min) и reports (30 min)
 
 networks:
   sapbw_net:

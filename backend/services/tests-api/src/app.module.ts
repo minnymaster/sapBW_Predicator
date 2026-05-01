@@ -9,6 +9,7 @@ import { TestsModule } from './tests/tests.module';
 import { AttemptsModule } from './attempts/attempts.module';
 import { RecommendationsModule } from './recommendations/recommendations.module';
 import { LlmModule } from './llm/llm.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { LlmModule } from './llm/llm.module';
     AttemptsModule,
     RecommendationsModule,
     LlmModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}

@@ -20,6 +20,12 @@ export class AttemptsController {
     private readonly recommendationsSvc: RecommendationsService,
   ) {}
 
+  /** GET /v1/attempts — список попыток текущего сотрудника */
+  @Get()
+  findMine(@CurrentUser() user: JwtPayload) {
+    return this.svc.findAllByEmployee(user.sub);
+  }
+
   /** UC-01: начать тест */
   @Post()
   start(

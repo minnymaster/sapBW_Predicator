@@ -23,6 +23,7 @@ import { CompetencyCoverageResponseDto } from './dto/competency-coverage.dto';
 import { ExportQueryDto } from './dto/export-query.dto';
 import { KpiProgressQueryDto } from './dto/kpi-progress-query.dto';
 import { KpiProgressResponseDto } from './dto/kpi-progress.dto';
+import { AssignmentStatsDto } from './dto/assignment-stats.dto';
 import { ReportsService } from './reports.service';
 
 @ApiTags('reports')
@@ -78,9 +79,46 @@ export class ReportsController {
   }
 
   // -------------------------------------------------------------------------
+  // GET /v1/reports/assignment-stats
+  // Сводка назначений: % просроченных, разбивка по статусам. Роли: hr, director.
+  // -------------------------------------------------------------------------
+
+  @Get('assignment-stats')
+  @Roles('hr', 'director')
+  @ApiOperation({ summary: '% просроченных назначений тестов' })
+  @ApiOkResponse({ type: AssignmentStatsDto })
+  @ApiUnauthorizedResponse({ description: 'Отсутствует или истёк JWT-токен' })
+  @ApiForbiddenResponse({ description: 'Роль не имеет доступа к отчётам' })
+  async getAssignmentStats(): Promise<AssignmentStatsDto> {
+    return this.reportsService.getAssignmentStats();
+  }
+
+  // -------------------------------------------------------------------------
   // GET /v1/reports/export?format=xlsx
   // Экспорт отчётов в Excel. Роли: hr, director (UC-14).
   // -------------------------------------------------------------------------
+
+  @Get('department-heatmap')
+  @Roles('director', 'hr')
+  @ApiOperation({ summary: 'Тепловая карта грейдов: подразделение × компетенция' })
+  async getDepartmentHeatmap() {
+    return this.reportsService.getDepartmentHeatmap();
+  }
+
+  @Get('grade-trend')
+  @Roles('director', 'hr')
+  @ApiOperation({ summary: 'Ежемесячная динамика грейдов за N месяцев' })
+  async getGradeTrend(@Query('months') months?: string) {
+    const m = Math.min(Math.max(Number(months ?? 12), 1), 24);
+    return this.reportsService.getGradeTrend(isNaN(m) ? 12 : m);
+  }
+
+  @Get('alerts')
+  @Roles('director', 'hr')
+  @ApiOperation({ summary: 'Критические события: просрочки, K1, KPI не выполнены' })
+  async getAlerts() {
+    return this.reportsService.getAlerts();
+  }
 
   @Get('export')
   @Roles('hr', 'director')

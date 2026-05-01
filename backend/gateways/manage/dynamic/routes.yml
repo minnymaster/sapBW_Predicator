@@ -1,0 +1,209 @@
+# =============================================================================
+# Manage API Gateway — динамическая конфигурация
+#
+# Маршруты:
+#   /v1/auth/*        → manage-api:3002  (без JWT-проверки роли, вход/обновление токена)
+#   /v1/questions/*   → manage-api:3002  (UC-07, только hr)
+#   /v1/tests/*       → manage-api:3002  (UC-08, только hr)
+#   /v1/assignments/* → manage-api:3002  (UC-11, только hr)
+#
+# Роутеры разделены на READ и WRITE для NFR-09 audit log:
+#   RouterName="manage-write@file" → попадает в manage-audit.log
+# =============================================================================
+
+http:
+
+  # ---------------------------------------------------------------------------
+  # Routers
+  # ---------------------------------------------------------------------------
+  routers:
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CORS preflight — наивысший приоритет, без JWT
+    # ─────────────────────────────────────────────────────────────────────────
+    manage-preflight:
+      rule: >-
+        Method(`OPTIONS`) && (
+          PathPrefix(`/v1/auth`)       ||
+          PathPrefix(`/v1/questions`)  ||
+          PathPrefix(`/v1/tests`)      ||
+          PathPrefix(`/v1/assignments`)
+        )
+      entryPoints:
+        - websecure
+      priority: 300
+      service: manage-api
+      middlewares:
+        - cors-manage
+      tls:
+        options: modern
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Auth routes — без проверки роли, только rate-limit и CORS
+    # Включает: POST /v1/auth/login, POST /v1/auth/refresh, POST /v1/auth/logout
+    # ─────────────────────────────────────────────────────────────────────────
+    manage-auth:
+      rule: "PathPrefix(`/v1/auth`)"
+      entryPoints:
+        - websecure
+      priority: 50
+      service: manage-api
+      middlewares:
+        - cors-manage
+        - rate-limit-hr
+        - security-headers
+      tls:
+        options: modern
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # READ — GET/HEAD, только hr; audit не требуется
+    # ─────────────────────────────────────────────────────────────────────────
+    manage-read:
+      rule: >-
+        Method(`GET`, `HEAD`) && (
+          PathPrefix(`/v1/questions`)  ||
+          PathPrefix(`/v1/tests`)      ||
+          PathPrefix(`/v1/assignments`)
+        )
+      entryPoints:
+        - websecure
+      priority: 20
+      service: manage-api
+      middlewares:
+        - cors-manage
+        - jwt-hr-auth
+        - rate-limit-hr
+        - security-headers
+      tls:
+        options: modern
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # WRITE — POST/PUT/PATCH/DELETE, только hr
+    # RouterName="manage-write@file" → фильтруется в manage-audit.log (NFR-09)
+    # Middleware audit-mark добавляет X-Audit: true в access log
+    # ─────────────────────────────────────────────────────────────────────────
+    manage-write:
+      rule: >-
+        Method(`POST`, `PUT`, `PATCH`, `DELETE`) && (
+          PathPrefix(`/v1/questions`)  ||
+          PathPrefix(`/v1/tests`)      ||
+          PathPrefix(`/v1/assignments`)
+        )
+      entryPoints:
+        - websecure
+      priority: 20
+      service: manage-api
+      middlewares:
+        - cors-manage
+        - jwt-hr-auth
+        - rate-limit-hr
+        - audit-mark
+        - security-headers
+      tls:
+        options: modern
+
+  # ---------------------------------------------------------------------------
+  # Services
+  # ---------------------------------------------------------------------------
+  services:
+
+    manage-api:
+      loadBalancer:
+        servers:
+          - url: "http://manage-api:3002"
+        healthCheck:
+          path: /health
+          interval: "10s"
+          timeout: "3s"
+          scheme: http
+        passHostHeader: false
+
+  # ---------------------------------------------------------------------------
+  # Middlewares
+  # ---------------------------------------------------------------------------
+  middlewares:
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CORS — только HR SPA (доступ к Manage GW не нужен Employee SPA)
+    # ─────────────────────────────────────────────────────────────────────────
+    cors-manage:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "Authorization"
+          - "Content-Type"
+          - "X-Requested-With"
+          - "Accept"
+        accessControlAllowOriginList:
+          - "http://localhost:5174"        # HR SPA (Vite dev)
+          - "https://hr.sapbw.local"       # HR SPA (prod)
+        accessControlMaxAge: 3600
+        accessControlAllowCredentials: true
+        addVaryHeader: true
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # JWT + HR role check
+    # manage-api:3002/v1/auth/validate должен:
+    #   — проверить Bearer токен (RS256, JWT_PUBLIC_KEY)
+    #   — проверить claim role == "hr" при required_role=hr
+    #   — вернуть 200 + X-User-ID, X-User-Role при успехе
+    #   — вернуть 401 (неверный токен) / 403 (роль не hr)
+    # ─────────────────────────────────────────────────────────────────────────
+    jwt-hr-auth:
+      forwardAuth:
+        address: "http://manage-api:3002/v1/auth/validate?required_role=hr"
+        authResponseHeaders:
+          - "X-User-ID"     # sub из JWT — идентификатор HR-пользователя
+          - "X-User-Role"   # role claim из JWT
+        trustForwardHeader: true
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Rate Limit — 30 req/min на пользователя (NFR-03)
+    # burst 5 позволяет 5 запросов подряд без немедленного 429
+    # sourceCriterion: X-User-ID — задаётся jwt-hr-auth через forwardAuth
+    # ─────────────────────────────────────────────────────────────────────────
+    rate-limit-hr:
+      rateLimit:
+        average: 30
+        period: "1m"
+        burst: 5
+        sourceCriterion:
+          requestHeaderName: "X-User-ID"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Audit Mark (NFR-09) — добавляет X-Audit: true в заголовки запроса
+    # Поле попадает в access log (manage-access.log, поле request_X-Audit)
+    # Контейнер manage-audit-log фильтрует:
+    #   jq 'select(.RouterName | test("write"))' → manage-audit.log
+    # Формат записи: timestamp, X-User-ID, X-User-Role, method, path,
+    #                downstream_status, duration, Content-Length
+    # ─────────────────────────────────────────────────────────────────────────
+    audit-mark:
+      headers:
+        customRequestHeaders:
+          X-Audit: "true"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Security Headers: HSTS, XSS, framing, MIME sniffing
+    # ─────────────────────────────────────────────────────────────────────────
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        frameDeny: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "geolocation=(), microphone=(), camera=()"
+        customResponseHeaders:
+          X-Content-Type-Options: "nosniff"
+          X-Frame-Options:        "DENY"
+          Cache-Control:          "no-store"

@@ -52,6 +52,7 @@ export interface KpiProgressResponse {
 }
 
 export interface ReportsQuery {
+  [key: string]: string | undefined;
   department_id?: string;
   period_from?: string;
   period_to?: string;

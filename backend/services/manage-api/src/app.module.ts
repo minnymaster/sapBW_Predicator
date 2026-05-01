@@ -8,18 +8,24 @@ import { RedisModule } from './redis/redis.module';
 import { QuestionsModule } from './questions/questions.module';
 import { TestsModule } from './tests/tests.module';
 import { AssignmentsModule } from './assignments/assignments.module';
+import { EmployeesModule } from './employees/employees.module';
+import { DepartmentsModule } from './departments/departments.module';
+import { KpiModule } from './kpi/kpi.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
-    CertificationPrismaModule, // глобальный — CertificationPrismaService доступен везде
-    KeysModule,                // глобальный — KeysService доступен везде (JwtModule)
-    RedisModule,               // глобальный — RedisPublisherService доступен везде
+    CertificationPrismaModule,
+    KeysModule,
+    RedisModule,
     AuthModule,
     QuestionsModule,
     TestsModule,
     AssignmentsModule,
+    EmployeesModule,
+    DepartmentsModule,
+    KpiModule,
   ],
 })
 export class AppModule {}

@@ -1,0 +1,211 @@
+# =============================================================================
+# Analytics API Gateway — динамическая конфигурация
+#
+# Маршруты:
+#   /v1/dashboard/* → analytics-cache → dashboard-api:3005  (кэш 5 мин)
+#   /v1/reports/*   → analytics-cache → reports-api:3004    (кэш 30 мин)
+#
+# Роли: director | hr  (valидируется через reports-api forwardAuth)
+# Rate limit: 50 req/min на пользователя (по X-User-ID)
+# Circuit Breaker: независимый на каждый маршрут, срабатывает при >20% ошибок за 1 мин
+#
+# Схема circuit breaker:
+#   CLOSED → (error ratio > 0.20 за checkPeriod 1m) → OPEN (fallback 30s 503)
+#          → (recoveryDuration 60s, half-open) → CLOSED
+# =============================================================================
+
+http:
+
+  # ---------------------------------------------------------------------------
+  # Routers
+  # ---------------------------------------------------------------------------
+  routers:
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CORS preflight — наивысший приоритет, без JWT
+    # ─────────────────────────────────────────────────────────────────────────
+    analytics-preflight:
+      rule: >-
+        Method(`OPTIONS`) && (
+          PathPrefix(`/v1/dashboard`) ||
+          PathPrefix(`/v1/reports`)
+        )
+      entryPoints:
+        - websecure
+      priority: 300
+      service: analytics-cache
+      middlewares:
+        - cors-analytics
+      tls:
+        options: modern
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dashboard — director + hr, Circuit Breaker изолирован от Reports
+    # GET → Nginx cache 5 min; POST/PUT/PATCH/DELETE → сквозной проксинг
+    # ─────────────────────────────────────────────────────────────────────────
+    analytics-dashboard:
+      rule: "PathPrefix(`/v1/dashboard`)"
+      entryPoints:
+        - websecure
+      priority: 20
+      service: analytics-cache
+      middlewares:
+        - cors-analytics
+        - jwt-analytics-auth
+        - rate-limit-analytics
+        - circuit-breaker-dashboard
+        - security-headers
+      tls:
+        options: modern
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Reports — director + hr, Circuit Breaker изолирован от Dashboard
+    # GET → Nginx cache 30 min; POST → сквозной (генерация отчёта на лету)
+    # ─────────────────────────────────────────────────────────────────────────
+    analytics-reports:
+      rule: "PathPrefix(`/v1/reports`)"
+      entryPoints:
+        - websecure
+      priority: 20
+      service: analytics-cache
+      middlewares:
+        - cors-analytics
+        - jwt-analytics-auth
+        - rate-limit-analytics
+        - circuit-breaker-reports
+        - security-headers
+      tls:
+        options: modern
+
+  # ---------------------------------------------------------------------------
+  # Services
+  # ---------------------------------------------------------------------------
+  services:
+
+    # Единый Nginx-кэш для обоих бэкендов.
+    # Nginx сам разделяет потоки: /v1/dashboard → dashboard-api, /v1/reports → reports-api.
+    # healthCheck смотрит на /health — лёгкий эндпоинт без обращения к БД.
+    analytics-cache:
+      loadBalancer:
+        servers:
+          - url: "http://analytics-cache:80"
+        healthCheck:
+          path: /health
+          interval: "10s"
+          timeout: "3s"
+          scheme: http
+        passHostHeader: false
+
+  # ---------------------------------------------------------------------------
+  # Middlewares
+  # ---------------------------------------------------------------------------
+  middlewares:
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CORS — HR SPA + Director SPA
+    # ─────────────────────────────────────────────────────────────────────────
+    cors-analytics:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "Authorization"
+          - "Content-Type"
+          - "X-Requested-With"
+          - "Accept"
+        accessControlAllowOriginList:
+          - "http://localhost:5174"           # HR SPA (Vite dev)
+          - "http://localhost:5175"           # Director SPA (Vite dev)
+          - "https://hr.sapbw.local"          # HR SPA (prod)
+          - "https://director.sapbw.local"    # Director SPA (prod)
+        accessControlMaxAge: 3600
+        accessControlAllowCredentials: true
+        addVaryHeader: true
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # JWT + Role check: director OR hr
+    # reports-api выбран для forwardAuth чтобы не создавать циклическую
+    # зависимость: circuit-breaker-dashboard не блокирует валидацию токена.
+    #
+    # reports-api:3004/v1/auth/validate должен:
+    #   — проверить Bearer RS256 JWT (JWT_PUBLIC_KEY)
+    #   — проверить claim role ∈ {director, hr} при required_roles=director,hr
+    #   — 200 + X-User-ID, X-User-Role  →  запрос пропускается
+    #   — 401 (неверный/просроченный токен)
+    #   — 403 (роль не подходит: employee и др.)
+    # ─────────────────────────────────────────────────────────────────────────
+    jwt-analytics-auth:
+      forwardAuth:
+        address: "http://reports-api:3004/v1/auth/validate?required_roles=director,hr"
+        authResponseHeaders:
+          - "X-User-ID"     # sub из JWT
+          - "X-User-Role"   # director | hr
+        trustForwardHeader: true
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Rate Limit — 50 req/min на пользователя (по X-User-ID после forwardAuth)
+    # burst 10 — допустимые всплески при загрузке отчётов
+    # ─────────────────────────────────────────────────────────────────────────
+    rate-limit-analytics:
+      rateLimit:
+        average: 50
+        period: "1m"
+        burst: 10
+        sourceCriterion:
+          requestHeaderName: "X-User-ID"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Circuit Breaker — Dashboard API (независим от Reports CB)
+    #
+    # Условие срабатывания: 5xx-ответы > 20% ИЛИ сетевые ошибки > 20%
+    #   ResponseCodeRatio(500, 600, 0, 600) — доля [500,600) от [0,600)
+    #   NetworkErrorRatio()                 — доля запросов с сетевой ошибкой
+    #
+    # checkPeriod:       1m  — окно наблюдения / интервал оценки условия
+    # fallbackDuration: 30s  — цепь ОТКРЫТА, возвращает 503 без обращения к бэкенду
+    # recoveryDuration: 60s  — half-open: пропускает пробный запрос для восстановления
+    # ─────────────────────────────────────────────────────────────────────────
+    circuit-breaker-dashboard:
+      circuitBreaker:
+        expression: >-
+          ResponseCodeRatio(500, 600, 0, 600) > 0.20 ||
+          NetworkErrorRatio() > 0.20
+        checkPeriod:      "1m"
+        fallbackDuration: "30s"
+        recoveryDuration: "60s"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Circuit Breaker — Reports API (независим от Dashboard CB)
+    # Отчёты терпимее к задержкам (тяжёлые SQL), но та же пороговая логика.
+    # fallbackDuration увеличен до 60s — отчёты запускают дорогие запросы,
+    # лучше дать бэкенду больше времени для восстановления.
+    # ─────────────────────────────────────────────────────────────────────────
+    circuit-breaker-reports:
+      circuitBreaker:
+        expression: >-
+          ResponseCodeRatio(500, 600, 0, 600) > 0.20 ||
+          NetworkErrorRatio() > 0.20
+        checkPeriod:      "1m"
+        fallbackDuration: "60s"
+        recoveryDuration: "60s"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Security Headers
+    # ─────────────────────────────────────────────────────────────────────────
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        frameDeny: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "geolocation=(), microphone=(), camera=()"
+        customResponseHeaders:
+          X-Content-Type-Options: "nosniff"
+          X-Frame-Options:        "DENY"
+          Cache-Control:          "no-store"

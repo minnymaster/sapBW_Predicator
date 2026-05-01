@@ -1,0 +1,201 @@
+# =============================================================================
+# Learning API Gateway — динамическая конфигурация
+#
+# tests-api:3001  (setGlobalPrefix('v1') + @Controller('name'))
+#   /v1/tests/*           — сессии тестирования (UC-01–UC-03)
+#   /v1/attempts/*        — ответы, завершение, следующий вопрос (UC-01–UC-02)
+#   /v1/questions/*       — банк вопросов: чтение + LLM-генерация (UC-03)
+#   /v1/recommendations/* — персональные рекомендации (UC-05)
+#   /v1/competencies/*    — модель компетенций: просмотр (UC-06)
+#   /v1/dashboard/*       — сводка компетенций сотрудника (UC-13 employee)
+#
+# courses-api:3003  (@Controller('v1/name'), без globalPrefix)
+#   /v1/courses/*         — каталог курсов (UC-04, UC-10)
+#   /v1/materials/*       — материалы курсов (UC-04, UC-10)
+# =============================================================================
+
+http:
+
+  # ---------------------------------------------------------------------------
+  # Routers
+  # ---------------------------------------------------------------------------
+  routers:
+
+    # CORS preflight для tests-api маршрутов — роутим к tests-api,
+    # чтобы NestJS вернул 200 на OPTIONS (Express обрабатывает OPTIONS
+    # автоматически для зарегистрированных путей).
+    learning-preflight-tests:
+      rule: >-
+        Method(`OPTIONS`) && (
+          PathPrefix(`/v1/tests`)           ||
+          PathPrefix(`/v1/attempts`)        ||
+          PathPrefix(`/v1/questions`)       ||
+          PathPrefix(`/v1/recommendations`) ||
+          PathPrefix(`/v1/competencies`)    ||
+          PathPrefix(`/v1/dashboard`)
+        )
+      entryPoints:
+        - websecure
+      priority: 200
+      service: tests-api
+      middlewares:
+        - cors-learning
+      tls:
+        options: modern
+
+    # CORS preflight для courses-api маршрутов
+    learning-preflight-courses:
+      rule: >-
+        Method(`OPTIONS`) && (
+          PathPrefix(`/v1/courses`) ||
+          PathPrefix(`/v1/materials`)
+        )
+      entryPoints:
+        - websecure
+      priority: 200
+      service: courses-api
+      middlewares:
+        - cors-learning
+      tls:
+        options: modern
+
+    # Tests API: тестирование, вопросы, рекомендации, компетенции, дашборд (UC-01–UC-06, UC-13 employee)
+    tests-router:
+      rule: >-
+        PathPrefix(`/v1/tests`)           ||
+        PathPrefix(`/v1/attempts`)        ||
+        PathPrefix(`/v1/questions`)       ||
+        PathPrefix(`/v1/recommendations`) ||
+        PathPrefix(`/v1/competencies`)    ||
+        PathPrefix(`/v1/dashboard`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: tests-api
+      middlewares:
+        - cors-learning
+        - jwt-forward-auth
+        - rate-limit-per-user
+        - security-headers
+      tls:
+        options: modern
+
+    # Courses API: каталог курсов + материалы (UC-04, UC-10)
+    courses-router:
+      rule: "PathPrefix(`/v1/courses`) || PathPrefix(`/v1/materials`)"
+      entryPoints:
+        - websecure
+      priority: 10
+      service: courses-api
+      middlewares:
+        - cors-learning
+        - jwt-forward-auth
+        - rate-limit-per-user
+        - security-headers
+      tls:
+        options: modern
+
+  # ---------------------------------------------------------------------------
+  # Services
+  # ---------------------------------------------------------------------------
+  services:
+
+    tests-api:
+      loadBalancer:
+        servers:
+          - url: "http://tests-api:3001"
+        healthCheck:
+          path: /health
+          interval: "10s"
+          timeout: "3s"
+          scheme: http
+        passHostHeader: false
+
+    courses-api:
+      loadBalancer:
+        servers:
+          - url: "http://courses-api:3003"
+        healthCheck:
+          path: /health
+          interval: "10s"
+          timeout: "3s"
+          scheme: http
+        passHostHeader: false
+
+  # ---------------------------------------------------------------------------
+  # Middlewares
+  # ---------------------------------------------------------------------------
+  middlewares:
+
+    # -------------------------------------------------------------------------
+    # CORS — Employee SPA (5173) и HR SPA (5174), прод-домены sapbw.local
+    # -------------------------------------------------------------------------
+    cors-learning:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "Authorization"
+          - "Content-Type"
+          - "X-Requested-With"
+          - "Accept"
+        accessControlAllowOriginList:
+          - "http://localhost:5173"          # Employee SPA (Vite dev)
+          - "http://localhost:5174"          # HR SPA (Vite dev)
+          - "https://employee.sapbw.local"   # Employee SPA (prod)
+          - "https://hr.sapbw.local"         # HR SPA (prod)
+        accessControlMaxAge: 86400           # 24 h preflight cache
+        accessControlAllowCredentials: true
+        addVaryHeader: true
+
+    # -------------------------------------------------------------------------
+    # JWT Forward Auth
+    # Сервис tests-api:3001/v1/auth/validate должен:
+    #   — вернуть 200 + заголовки X-User-ID, X-User-Role при валидном токене
+    #   — вернуть 401/403 при невалидном токене
+    # -------------------------------------------------------------------------
+    jwt-forward-auth:
+      forwardAuth:
+        address: "http://tests-api:3001/v1/auth/validate"
+        authResponseHeaders:
+          - "X-User-ID"     # пробрасывается в upstream как идентификатор
+          - "X-User-Role"   # employee | hr | director
+        trustForwardHeader: true
+
+    # -------------------------------------------------------------------------
+    # Rate Limit — 100 req/min на пользователя (по X-User-ID после JWT-auth)
+    # burst 20 позволяет короткие всплески без немедленного 429
+    # -------------------------------------------------------------------------
+    rate-limit-per-user:
+      rateLimit:
+        average: 100
+        period: "1m"
+        burst: 20
+        sourceCriterion:
+          requestHeaderName: "X-User-ID"
+
+    # -------------------------------------------------------------------------
+    # Security Headers: HSTS, XSS, framing, MIME sniffing
+    # -------------------------------------------------------------------------
+    security-headers:
+      headers:
+        # HSTS: 1 год, includeSubDomains, preload
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        # Прочие защитные заголовки
+        contentTypeNosniff: true
+        browserXssFilter: true
+        frameDeny: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "geolocation=(), microphone=(), camera=()"
+        customResponseHeaders:
+          X-Content-Type-Options: "nosniff"
+          X-Frame-Options: "DENY"
+          Cache-Control: "no-store"

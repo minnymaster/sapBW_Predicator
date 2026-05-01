@@ -1,12 +1,15 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { RequestMethod, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.setGlobalPrefix('v1/reports');
+  // /v1/auth/validate исключён из префикса — используется Traefik forwardAuth
+  app.setGlobalPrefix('v1/reports', {
+    exclude: [{ path: 'v1/auth/validate', method: RequestMethod.GET }],
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({

@@ -103,6 +103,12 @@ export class AttemptsService {
       },
     });
 
+    // Сдвигаем индекс на следующий вопрос
+    await this.prisma.testAttempt.update({
+      where: { attemptId },
+      data: { currentQuestionIndex: { increment: 1 } },
+    });
+
     // Для open_text ставим джоб в LlmQueue (fire-and-forget).
     // Процессор сам обновит AnswerLog после получения ответа от LLM.
     // PROMPT_EVALUATE_ANSWER — см. llm.service.ts
@@ -261,6 +267,39 @@ export class AttemptsService {
     });
 
     return result;
+  }
+
+  /** GET /v1/attempts — список попыток текущего сотрудника */
+  async findAllByEmployee(employeeId: string) {
+    const attempts = await this.prisma.testAttempt.findMany({
+      where: { employeeId },
+      include: {
+        test: { select: { title: true } },
+        competencyResults: {
+          include: { competency: { select: { name: true } } },
+        },
+      },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    return attempts.map((a) => ({
+      attemptId: a.attemptId,
+      testId: a.testId,
+      testTitle: a.test.title,
+      status: a.status,
+      gradeAchieved: a.gradeAchieved,
+      totalScore: a.totalScore !== null ? Number(a.totalScore) : null,
+      maxScore: a.maxScore !== null ? Number(a.maxScore) : null,
+      startedAt: a.startedAt,
+      finishedAt: a.finishedAt,
+      competencyResults: a.competencyResults.map((cr) => ({
+        competency_name: cr.competency.name,
+        score_percent:
+          Number(cr.maxScore) > 0
+            ? Math.round((Number(cr.score) / Number(cr.maxScore)) * 100)
+            : 0,
+      })),
+    }));
   }
 
   /**
